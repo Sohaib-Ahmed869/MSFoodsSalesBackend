@@ -419,7 +419,7 @@ const calculateCustomerKPIs = async (customerId) => {
           monthlyTrends: [
             {
               $match: {
-                CreationDate: {
+                DocDate: {
                   $gte: new Date(
                     new Date().setMonth(new Date().getMonth() - 6)
                   ),
@@ -429,8 +429,8 @@ const calculateCustomerKPIs = async (customerId) => {
             {
               $group: {
                 _id: {
-                  year: { $year: "$CreationDate" },
-                  month: { $month: "$CreationDate" },
+                  year: { $year: "$DocDate" },
+                  month: { $month: "$DocDate" },
                 },
                 invoiceCount: { $sum: 1 },
                 totalAmount: { $sum: "$DocTotal" },
@@ -760,7 +760,7 @@ exports.getGlobalKPIs = async (req, res) => {
     // Create a date filter that will be applied to all relevant pipelines
     const dateFilter = {};
     if (startDate && endDate) {
-      dateFilter.CreationDate = {
+      dateFilter.DocDate = {
         $gte: new Date(startDate),
         $lte: new Date(endDate),
       };
@@ -830,8 +830,8 @@ exports.getGlobalKPIs = async (req, res) => {
       {
         $group: {
           _id: {
-            year: { $year: "$CreationDate" },
-            month: { $month: "$CreationDate" },
+            year: { $year: "$DocDate" },
+            month: { $month: "$DocDate" },
           },
           invoiceCount: { $sum: 1 },
           totalAmount: { $sum: "$DocTotal" },
