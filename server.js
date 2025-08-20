@@ -42,8 +42,6 @@ const chatbotRoutes = require('./routes/chatbot.routes');
 const productAnalyticsRoutes = require('./routes/productAnalytics.routes')
 const config = require("./services/config");
 const desktimeJob = require("./jobs/desktimeJob");
-const { linkDocumentsToAgents } = require("./migrateAgentReferences");
-const { syncFromFeb21 } = require("./jobs/hubspotJob");
 const { fetchCallsFromMay2UntilToday } = require("./jobs/mayScript");
 const targetScheduler = require("./services/targetScheduler");
 require('./jobs/updateRestaurantAnalysis'); 
