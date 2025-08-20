@@ -25,11 +25,35 @@ const lambdaClient = new LambdaClient({
 });
 const {
   getLastCustomerFromSAP,
-  generateNextCardCode,
   formatCustomerForSAP,
   createCustomerInSAP,
   checkCustomerExistsInSAP,
 } = require("../utils/sapB1CustomerIntegration");
+
+async function generateNextCardCode() {
+  try {
+    const lastCustomer = await Customer.findOne({
+      CardCode: { $regex: /^C\d+$/ }
+    }).sort({ CardCode: -1 }).lean();
+
+    let nextNumber = 1;
+    if (lastCustomer && lastCustomer.CardCode) {
+      const numericPart = lastCustomer.CardCode.substring(1);
+      const lastNumber = parseInt(numericPart, 10);
+      if (!isNaN(lastNumber)) {
+        nextNumber = lastNumber + 1;
+      }
+    }
+
+    const formattedNumber = nextNumber.toString().padStart(4, '0');
+    const newCardCode = `C${formattedNumber}`;
+    console.log(`Generated CardCode: ${newCardCode}`);
+    return newCardCode;
+  } catch (error) {
+    console.error("Error generating CardCode:", error);
+    throw new Error("Failed to generate unique CardCode");
+  }
+}
 
 // Helper function to push customer to SAP
 async function pushCustomerToSAPInternal(customer) {
