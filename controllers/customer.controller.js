@@ -337,31 +337,16 @@ exports.createCustomer = async (req, res) => {
 
     // Push to SAP automatically
     console.log("Automatically pushing new customer to SAP...");
-    const sapResult = await pushCustomerToSAPInternal(newCustomer);
 
-    // Return response with both local creation and SAP push results
-    if (sapResult.success) {
-      res.status(201).json({
-        success: true,
-        data: newCustomer,
-        message: "Customer created successfully and synced with SAP",
-        sapSync: {
-          success: true,
-          CardCode: sapResult.CardCode,
-        },
-      });
-    } else {
-      res.status(201).json({
-        success: true,
-        data: newCustomer,
-        message:
-          "Customer created successfully in local database but failed to sync with SAP",
-        sapSync: {
-          success: false,
-          error: sapResult.error,
-        },
-      });
-    }
+
+    res.status(201).json({
+      success: true,
+      data: newCustomer,
+      message:
+        "Customer created successfully",
+
+    });
+
   } catch (error) {
     console.error("Error creating customer:", error);
     res.status(500).json({
@@ -6298,7 +6283,7 @@ exports.getCustomerDocuments = async (req, res) => {
 
     const documents = {
       companyDoc: null,
-      managerId: null,  
+      managerId: null,
       otherDocuments: [],
     };
 
