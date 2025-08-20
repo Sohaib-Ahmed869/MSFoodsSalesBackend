@@ -182,37 +182,36 @@ exports.generatePaymentLinkForQuotation = async (req, res) => {
 </thead>
 <tbody>
 ${quotation.DocumentLines.map(
-  (line) => `
+      (line) => `
   <tr>
   <td style="padding: 8px; border: 1px solid #ddd;">${line.ItemDescription}</td>
   <td style="padding: 8px; border: 1px solid #ddd;">${line.Quantity}</td>
   <td style="padding: 8px; border: 1px solid #ddd;">${new Intl.NumberFormat(
-    "fr-FR",
-    {
-      style: "currency",
-      currency: "EUR",
-    }
-  ).format(line.Price)}</td>
-  <td style="padding: 8px; border: 1px solid #ddd;">${
-    line.VatGroup || "C4"
-  }</td>
+        "fr-FR",
+        {
+          style: "currency",
+          currency: "EUR",
+        }
+      ).format(line.Price)}</td>
+  <td style="padding: 8px; border: 1px solid #ddd;">${line.VatGroup || "C4"
+        }</td>
   <td style="padding: 8px; border: 1px solid #ddd;">${new Intl.NumberFormat(
-    "fr-FR",
-    {
-      style: "currency",
-      currency: "EUR",
-    }
-  ).format(line.PriceAfterVAT || line.Price * 1.2)}</td>
+          "fr-FR",
+          {
+            style: "currency",
+            currency: "EUR",
+          }
+        ).format(line.PriceAfterVAT || line.Price * 1.2)}</td>
   <td style="padding: 8px; border: 1px solid #ddd;">${new Intl.NumberFormat(
-    "fr-FR",
-    {
-      style: "currency",
-      currency: "EUR",
-    }
-  ).format(line.LineTotalWithVAT || line.LineTotal * 1.2)}</td>
+          "fr-FR",
+          {
+            style: "currency",
+            currency: "EUR",
+          }
+        ).format(line.LineTotalWithVAT || line.LineTotal * 1.2)}</td>
   </tr>
   `
-).join("")}
+    ).join("")}
 </tbody>
 <tfoot>
 <tr style="background-color: #f3f4f6;">
@@ -548,7 +547,7 @@ exports.getQuotationStats = async (req, res) => {
     const { fromDate, toDate, salesAgent } = req.query;
 
     // Build filter query with role-based restrictions
-  let query = {};
+    let query = {};
 
     // Role-based filtering
     if (req.user.role === "sales_agent") {
@@ -720,9 +719,8 @@ exports.approveQuotation = async (req, res) => {
         approvalTask.completedDate = new Date();
 
         // Add approval comment to task
-        const taskComment = `Quotation approved by ${req.user.firstName} ${
-          req.user.lastName
-        }${comments ? ": " + comments : ""}`;
+        const taskComment = `Quotation approved by ${req.user.firstName} ${req.user.lastName
+          }${comments ? ": " + comments : ""}`;
         approvalTask.comments = approvalTask.comments
           ? `${approvalTask.comments}\n\n${taskComment}`
           : taskComment;
@@ -780,9 +778,8 @@ exports.rejectQuotation = async (req, res) => {
         approvalTask.status = "rejected";
 
         // Add rejection comment to task
-        const taskComment = `Quotation rejected by ${req.user.firstName} ${
-          req.user.lastName
-        }${reason ? ": " + reason : ""}`;
+        const taskComment = `Quotation rejected by ${req.user.firstName} ${req.user.lastName
+          }${reason ? ": " + reason : ""}`;
         approvalTask.comments = approvalTask.comments
           ? `${approvalTask.comments}\n\n${taskComment}`
           : taskComment;
@@ -977,11 +974,9 @@ exports.createQuotation = async (req, res) => {
       // Create new task for quotation approval
       const task = new Task({
         title: `Approve Quotation #${newQuotation.DocNum}`,
-        description: `Review and approve quotation #${
-          newQuotation.DocNum
-        } for ${newQuotation.CardName} (${
-          newQuotation.CardCode
-        }) - Total: $${newQuotation.DocTotal.toFixed(2)}`,
+        description: `Review and approve quotation #${newQuotation.DocNum
+          } for ${newQuotation.CardName} (${newQuotation.CardCode
+          }) - Total: $${newQuotation.DocTotal.toFixed(2)}`,
         dueDate: new Date(new Date().setDate(new Date().getDate() + 1)), // Due tomorrow
         priority: "medium",
         type: "approval",
@@ -1027,31 +1022,31 @@ exports.getAllQuotations = async (req, res) => {
     console.log("User ID:", req.user._id);
 
     // Base query - show ALL quotations by default
-let query = {};
+    let query = {};
 
-// Add specific filters based on status
-if (req.query.status) {
-  if (req.query.status === "active") {
-    query.IsActive = true;
-  } else if (req.query.status === "converted") {
-    query.ConvertedToOrderDocEntry = { $exists: true };
-    query.IsActive = false;
-  } else if (req.query.status === "cancelled") {
-    query.IsActive = false;
-    query.ConvertedToOrderDocEntry = { $exists: false };
-  } else if (req.query.status === "pending") {
-    query.approvalStatus = "pending";
-    query.IsActive = true;
-  } else if (req.query.status === "approved") {
-    query.approvalStatus = "approved";
-    query.IsActive = true;
-  } else if (req.query.status === "rejected") {
-    query.approvalStatus = "rejected";
-    query.IsActive = true;
-  }
-} else {
-  // Default: show all quotations (no filtering)
-}
+    // Add specific filters based on status
+    if (req.query.status) {
+      if (req.query.status === "active") {
+        query.IsActive = true;
+      } else if (req.query.status === "converted") {
+        query.ConvertedToOrderDocEntry = { $exists: true };
+        query.IsActive = false;
+      } else if (req.query.status === "cancelled") {
+        query.IsActive = false;
+        query.ConvertedToOrderDocEntry = { $exists: false };
+      } else if (req.query.status === "pending") {
+        query.approvalStatus = "pending";
+        query.IsActive = true;
+      } else if (req.query.status === "approved") {
+        query.approvalStatus = "approved";
+        query.IsActive = true;
+      } else if (req.query.status === "rejected") {
+        query.approvalStatus = "rejected";
+        query.IsActive = true;
+      }
+    } else {
+      // Default: show all quotations (no filtering)
+    }
 
     // Role-based filtering
     if (req.user.role === "sales_agent") {
@@ -1371,53 +1366,18 @@ exports.convertToOrder = async (req, res) => {
     quotation.ConvertedDate = new Date();
     await quotation.save();
 
-    // Push to SAP
-    console.log("Pushing converted order to SAP...");
-    const sapResult = await pushOrderToSAPInternal(newOrder);
 
-    // Return response
-    if (sapResult.success) {
-      res.status(201).json({
-        success: true,
-        data: newOrder,
-        originalQuotation: {
-          DocEntry: quotation.DocEntry,
-          status: "Converted",
-        },
-        message:
-          "Quotation successfully converted to order and synced with SAP",
-        sapSync: {
-          success: true,
-          SAPDocEntry: sapResult.SAPDocEntry,
-        },
-      });
-    } else {
-      // Customize message based on error code
-      let sapErrorMessage = "Failed to sync with SAP";
+    res.status(201).json({
+      success: true,
+      data: newOrder,
+      originalQuotation: {
+        DocEntry: quotation.DocEntry,
+        status: "Converted",
+      },
+      message: "Quotation converted to order but failed to sync with SAP",
 
-      if (
-        sapResult.code === "BP_NOT_FOUND" ||
-        sapResult.code === "INVALID_BP_CODE"
-      ) {
-        sapErrorMessage = `Business partner ${newOrder.CardCode} does not exist in SAP B1`;
-      }
+    });
 
-      res.status(201).json({
-        success: true,
-        data: newOrder,
-        originalQuotation: {
-          DocEntry: quotation.DocEntry,
-          status: "Converted",
-        },
-        message: "Quotation converted to order but failed to sync with SAP",
-        sapSync: {
-          success: false,
-          error: sapResult.error,
-          message: sapErrorMessage,
-          code: sapResult.code,
-        },
-      });
-    }
   } catch (error) {
     console.error("Error converting quotation to order:", error);
     res.status(500).json({
@@ -1537,11 +1497,9 @@ exports.updateQuotation = async (req, res) => {
 
         const task = new Task({
           title: `Approve Updated Quotation #${quotation.DocNum}`,
-          description: `Review and approve updated quotation #${
-            quotation.DocNum
-          } for ${quotation.CardName} (${
-            quotation.CardCode
-          }) - Total: €${quotation.DocTotal.toFixed(2)}`,
+          description: `Review and approve updated quotation #${quotation.DocNum
+            } for ${quotation.CardName} (${quotation.CardCode
+            }) - Total: €${quotation.DocTotal.toFixed(2)}`,
           dueDate: new Date(new Date().setDate(new Date().getDate() + 1)),
           priority: "medium",
           type: "approval",
@@ -1933,9 +1891,8 @@ async function sendEmailWithAttachment({ to, cc, subject, text, attachments }) {
       errorMessage =
         "Email authentication failed. Please check username and password.";
     } else if (error.responseCode) {
-      errorMessage = `SMTP Error: ${error.responseCode} - ${
-        error.response || error.message
-      }`;
+      errorMessage = `SMTP Error: ${error.responseCode} - ${error.response || error.message
+        }`;
     } else if (error.message) {
       errorMessage = error.message;
     }
