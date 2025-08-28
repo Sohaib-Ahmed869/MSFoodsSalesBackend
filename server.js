@@ -130,6 +130,7 @@ mongoose
   
 // Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/customer-journey", customerJourneyRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/prestashop", prestashopRoutes);
 app.use("/api/products", productRoutes);
@@ -140,7 +141,6 @@ app.use("/api/desktime", desktimeRoutes);
 app.use("/api/call-data", callDataRoutes);
 app.use("/api/restaurant-matcher", restaurantMatcherRoutes);
 app.use("/api/dashboard", dashboardRoutes);
-app.use("/api/customer-journey", customerJourneyRoutes);
 app.use("/api/recommendations", recommendationRoutes);
 app.use("/api/customer-targets", customerTargetRoutes);
 app.use("/api/sales-manager", salesManagerRoutes);

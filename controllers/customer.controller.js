@@ -1734,6 +1734,7 @@ exports.getCustomerById = async (req, res) => {
   try {
     const customerId = req.params.id;
     let customer;
+    console.log(customerId)
 
     // Role-based permissions
     if (req.user && req.user.role === "admin") {
