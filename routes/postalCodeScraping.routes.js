@@ -28,10 +28,9 @@ router.use(logApiUsage);
  * @access  Private (All authenticated users)
  * @body    {
  *   postal_code: string (required) - 5-digit postal code
- *   max_restaurants: number (optional) - Maximum establishments to scrape
+ *   max_restaurants: number (optional) - Maximum establishments to scrape (default: 10)
  *   max_menu_items: number (optional) - Maximum menu items per establishment
  *   visible: boolean (optional) - Run browser in visible mode (default: false)
- *   llm_config: object (optional) - LLM configuration for categorization
  * }
  */
 router.post("/start", postalCodeScrapingController.startPostalCodeScraping);
@@ -97,7 +96,7 @@ router.delete("/jobs/:jobId", postalCodeScrapingController.deleteJob);
  * @query   {
  *   page: number (default: 1)
  *   limit: number (default: 20)
- *   establishment_type: string (restaurant|store|grocery|convenience)
+ *   establishment_type: string (restaurant|store|grocery|convenience|pharmacy)
  *   search: string
  *   sort_by: string (default: scraped_at)
  *   sort_order: string (asc|desc, default: desc)
@@ -113,11 +112,15 @@ router.get("/jobs/:jobId/data", postalCodeScrapingController.getJobScrapedData);
 router.get("/jobs/:jobId/data-progress", postalCodeScrapingController.getJobDataProgress);
 
 /**
- * @route   POST /api/postal-scraping/jobs/:jobId/link-data
- * @desc    Manually link scraped data to a job based on postal code and timing
- * @access  Private (Job creator or admin)
+ * @route   POST /api/postal-scraping/load-json
+ * @desc    Load existing JSON data from Flask server (for testing)
+ * @access  Private (All authenticated users)
+ * @body    {
+ *   postal_code: string (required)
+ * }
  */
-router.post("/jobs/:jobId/link-data", postalCodeScrapingController.linkScrapedDataToJob);
+router.post("/load-json", postalCodeScrapingController.loadJsonDataFromFlask);
+
 // Statistics and Monitoring Routes
 // =================================
 
@@ -212,12 +215,25 @@ router.post("/admin/cleanup",
             };
 
             const PostalCodeScraping = require("../models/PostalCodeScraping");
-            const result = await PostalCodeScraping.deleteMany(query);
+            const UberEatsData = require("../models/UberEats.model");
+
+            // Get job IDs to clean up associated data
+            const jobsToDelete = await PostalCodeScraping.find(query).select('jobId');
+            const jobIds = jobsToDelete.map(job => job.jobId);
+
+            // Delete associated scraped data
+            const dataDeleteResult = await UberEatsData.deleteMany({
+                scraping_job_id: { $in: jobIds }
+            });
+
+            // Delete jobs
+            const jobDeleteResult = await PostalCodeScraping.deleteMany(query);
 
             res.json({
                 success: true,
-                message: `Cleaned up ${result.deletedCount} old jobs`,
-                deletedCount: result.deletedCount,
+                message: `Cleaned up ${jobDeleteResult.deletedCount} old jobs and ${dataDeleteResult.deletedCount} associated data records`,
+                deletedJobs: jobDeleteResult.deletedCount,
+                deletedDataRecords: dataDeleteResult.deletedCount,
                 criteria: {
                     olderThanDays: older_than_days,
                     keepSuccessful: keep_successful
@@ -245,58 +261,73 @@ router.get("/admin/system-stats",
     async (req, res) => {
         try {
             const PostalCodeScraping = require("../models/PostalCodeScraping");
+            const UberEatsData = require("../models/UberEats.model");
 
-            const systemStats = await PostalCodeScraping.aggregate([
-                {
-                    $group: {
-                        _id: null,
-                        totalJobs: { $sum: 1 },
-                        totalEstablishments: { $sum: '$progress.establishmentsScraped' },
-                        totalItems: {
-                            $sum: {
-                                $add: ['$progress.totalMenuItems', '$progress.totalProducts']
+            const [systemStats, statusBreakdown, topUsers, dataStats] = await Promise.all([
+                PostalCodeScraping.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            totalJobs: { $sum: 1 },
+                            totalEstablishments: { $sum: '$progress.establishmentsScraped' },
+                            totalItems: { $sum: '$progress.totalMenuItems' },
+                            avgJobDuration: { $avg: '$runtimeSeconds' },
+                            llmJobsCount: {
+                                $sum: { $cond: [{ $ne: ['$llmConfig.provider', null] }, 1, 0] }
                             }
-                        },
-                        avgJobDuration: { $avg: '$runtimeSeconds' },
-                        llmJobsCount: {
-                            $sum: { $cond: [{ $ne: ['$llmConfig.provider', null] }, 1, 0] }
                         }
                     }
-                }
-            ]);
-
-            const statusBreakdown = await PostalCodeScraping.aggregate([
-                {
-                    $group: {
-                        _id: '$status',
-                        count: { $sum: 1 }
+                ]),
+                PostalCodeScraping.aggregate([
+                    {
+                        $group: {
+                            _id: '$status',
+                            count: { $sum: 1 }
+                        }
                     }
-                }
-            ]);
-
-            const topUsers = await PostalCodeScraping.aggregate([
-                {
-                    $group: {
-                        _id: '$createdBy',
-                        jobCount: { $sum: 1 },
-                        totalEstablishments: { $sum: '$progress.establishmentsScraped' }
+                ]),
+                PostalCodeScraping.aggregate([
+                    {
+                        $group: {
+                            _id: '$createdBy',
+                            jobCount: { $sum: 1 },
+                            totalEstablishments: { $sum: '$progress.establishmentsScraped' }
+                        }
+                    },
+                    { $sort: { jobCount: -1 } },
+                    { $limit: 5 },
+                    {
+                        $lookup: {
+                            from: 'users',
+                            localField: '_id',
+                            foreignField: '_id',
+                            as: 'user'
+                        }
                     }
-                },
-                { $sort: { jobCount: -1 } },
-                { $limit: 5 },
-                {
-                    $lookup: {
-                        from: 'users',
-                        localField: '_id',
-                        foreignField: '_id',
-                        as: 'user'
+                ]),
+                UberEatsData.aggregate([
+                    {
+                        $group: {
+                            _id: null,
+                            totalDataRecords: { $sum: 1 },
+                            totalMenuItems: { $sum: '$menu_items_count' },
+                            restaurantCount: {
+                                $sum: { $cond: [{ $eq: ['$establishment_type', 'restaurant'] }, 1, 0] }
+                            },
+                            storeCount: {
+                                $sum: { $cond: [{ $ne: ['$establishment_type', 'restaurant'] }, 1, 0] }
+                            }
+                        }
                     }
-                }
+                ])
             ]);
 
             res.json({
                 success: true,
-                systemStats: systemStats[0] || {},
+                systemStats: {
+                    ...(systemStats[0] || {}),
+                    ...(dataStats[0] || {})
+                },
                 statusBreakdown: statusBreakdown.reduce((acc, curr) => {
                     acc[curr._id] = curr.count;
                     return acc;

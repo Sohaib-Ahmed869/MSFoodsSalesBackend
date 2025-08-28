@@ -10,6 +10,13 @@ const postalCodeScrapingSchema = new mongoose.Schema({
         index: true
     },
 
+    // External job ID from Flask service
+    externalJobId: {
+        type: String,
+        default: null,
+        index: true
+    },
+
     // Request parameters
     postalCode: {
         type: String,
@@ -18,7 +25,7 @@ const postalCodeScrapingSchema = new mongoose.Schema({
     },
     maxRestaurants: {
         type: Number,
-        default: null
+        default: 10
     },
     maxMenuItems: {
         type: Number,
@@ -34,7 +41,7 @@ const postalCodeScrapingSchema = new mongoose.Schema({
         provider: {
             type: String,
             enum: ['openai', 'anthropic', 'local'],
-            default: null
+            default: 'openai'
         },
         apiKey: {
             type: String,
@@ -42,7 +49,7 @@ const postalCodeScrapingSchema = new mongoose.Schema({
         },
         model: {
             type: String,
-            default: null
+            default: 'gpt-4o-mini'
         },
         baseUrl: {
             type: String,
@@ -116,6 +123,10 @@ const postalCodeScrapingSchema = new mongoose.Schema({
             type: Boolean,
             default: false
         },
+        message: {
+            type: String,
+            default: null
+        },
         scrapingResults: {
             pagesProcessed: {
                 type: Number,
@@ -179,10 +190,6 @@ const postalCodeScrapingSchema = new mongoose.Schema({
             scrapingTime: { type: Number, default: 0 },
             totalTime: { type: Number, default: 0 }
         },
-        message: {
-            type: String,
-            default: null
-        },
         error: {
             type: String,
             default: null
@@ -234,6 +241,35 @@ const postalCodeScrapingSchema = new mongoose.Schema({
         type: String
     }],
 
+    // Communication logs with Flask service
+    communicationLogs: [{
+        timestamp: {
+            type: Date,
+            default: Date.now
+        },
+        type: {
+            type: String,
+            enum: ['request', 'response', 'webhook', 'error'],
+            required: true
+        },
+        endpoint: {
+            type: String,
+            required: true
+        },
+        data: {
+            type: mongoose.Schema.Types.Mixed,
+            default: null
+        },
+        success: {
+            type: Boolean,
+            default: true
+        },
+        error: {
+            type: String,
+            default: null
+        }
+    }],
+
     // Error details
     errorDetails: {
         code: {
@@ -259,6 +295,7 @@ const postalCodeScrapingSchema = new mongoose.Schema({
 postalCodeScrapingSchema.index({ postalCode: 1, status: 1 });
 postalCodeScrapingSchema.index({ createdBy: 1, createdAt: -1 });
 postalCodeScrapingSchema.index({ status: 1, createdAt: -1 });
+postalCodeScrapingSchema.index({ externalJobId: 1 });
 
 // Virtual for runtime calculation
 postalCodeScrapingSchema.virtual('currentRuntimeMinutes').get(function () {
@@ -273,6 +310,10 @@ postalCodeScrapingSchema.virtual('currentRuntimeMinutes').get(function () {
 postalCodeScrapingSchema.methods.updateProgress = function (progressData) {
     Object.assign(this.progress, progressData);
     this.updatedAt = new Date();
+
+    // Log progress update
+    this.addCommunicationLog('response', 'progress_update', progressData);
+
     return this.save();
 };
 
@@ -281,6 +322,10 @@ postalCodeScrapingSchema.methods.setResults = function (resultsData) {
     this.status = resultsData.success ? 'completed' : 'failed';
     this.completedAt = new Date();
     this.updatedAt = new Date();
+
+    // Log results
+    this.addCommunicationLog('response', 'set_results', resultsData);
+
     return this.save();
 };
 
@@ -288,6 +333,10 @@ postalCodeScrapingSchema.methods.markAsStarted = function () {
     this.status = 'running';
     this.startedAt = new Date();
     this.updatedAt = new Date();
+
+    // Log job start
+    this.addCommunicationLog('response', 'job_started', { status: 'running' });
+
     return this.save();
 };
 
@@ -307,6 +356,9 @@ postalCodeScrapingSchema.methods.markAsFailed = function (error) {
         };
     }
 
+    // Log error
+    this.addCommunicationLog('error', 'job_failed', { error: error.message || error });
+
     return this.save();
 };
 
@@ -314,7 +366,31 @@ postalCodeScrapingSchema.methods.markAsStopped = function () {
     this.status = 'stopped';
     this.completedAt = new Date();
     this.updatedAt = new Date();
+
+    // Log stop
+    this.addCommunicationLog('response', 'job_stopped', { status: 'stopped' });
+
     return this.save();
+};
+
+postalCodeScrapingSchema.methods.addCommunicationLog = function (type, endpoint, data, success = true, error = null) {
+    if (!this.communicationLogs) {
+        this.communicationLogs = [];
+    }
+
+    this.communicationLogs.push({
+        timestamp: new Date(),
+        type,
+        endpoint,
+        data,
+        success,
+        error
+    });
+
+    // Keep only last 50 logs to prevent bloat
+    if (this.communicationLogs.length > 50) {
+        this.communicationLogs = this.communicationLogs.slice(-50);
+    }
 };
 
 // Static methods
@@ -335,6 +411,10 @@ postalCodeScrapingSchema.statics.getJobsByPostalCode = function (postalCode) {
     return this.find({ postalCode })
         .sort({ createdAt: -1 })
         .populate('createdBy', 'firstName lastName email');
+};
+
+postalCodeScrapingSchema.statics.findByExternalJobId = function (externalJobId) {
+    return this.findOne({ externalJobId });
 };
 
 // Pre-save middleware

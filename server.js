@@ -157,7 +157,7 @@ app.use("/api/carts", CartRoutes); // Cart routes
 app.use("/api/sales-manager-dashboard", SalesManagerDashboardRoutes); // Sales manager dashboard routes
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/jobs", jobLogRoutes); // Job logs routes
-app.use("/api/postal-code-scraping", postalCodeScrapingRoutes); // Postal code scraping routes
+app.use("/api/postal-scraping", postalCodeScrapingRoutes); // Postal code scraping routes
 app.use('/api/chatbot', chatbotRoutes);
 app.use('/api/product-analytics', productAnalyticsRoutes);  
 

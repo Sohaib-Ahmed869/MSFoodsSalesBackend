@@ -3493,11 +3493,7 @@ exports.updateCustomerAddresses = async (req, res) => {
       let city = item.city || "";
       let zipCode = item.zipCode || "";
 
-      // French postal codes are typically 5 digits
-      if (!city && zipCode.length === 5) {
-        // You could add a lookup table here for French postal codes to cities
-        // For now, we'll just use the data as is
-      }
+   
 
       // Clean street address - remove any excess whitespace
       let street = item.street ? item.street.trim() : "";

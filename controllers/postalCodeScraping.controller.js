@@ -2,11 +2,11 @@
 const PostalCodeScraping = require("../models/PostalCodeScraping");
 const axios = require("axios");
 const { v4: uuidv4 } = require("uuid");
-const UberEatsData = require('../models/UberEats.model')
+const UberEatsData = require('../models/UberEats.model');
 
 // Configuration
-const SCRAPER_API_URL = process.env.SCRAPER_API_URL || "https://hfs-ws.onrender.com";
-const SCRAPER_API_TIMEOUT = 300000; // 30 seconds
+const SCRAPER_API_URL = process.env.SCRAPER_API_URL || "https://hfs-ws-1.onrender.com";
+const SCRAPER_API_TIMEOUT = 300000; // 5 minutes
 
 /**
  * Start a new postal code scraping job
@@ -15,16 +15,10 @@ exports.startPostalCodeScraping = async (req, res) => {
     try {
         const {
             postal_code,
-            max_restaurants,
+            max_restaurants = 10,
             max_menu_items,
             visible = false
         } = req.body;
-
-        const llm_config = {
-            provider: 'openai',
-            api_key: process.env.NEW_OPENAI_API_KEY,
-            model: 'gpt-4o-mini'
-        };
 
         // Validate required fields
         if (!postal_code) {
@@ -34,46 +28,10 @@ exports.startPostalCodeScraping = async (req, res) => {
             });
         }
 
-        // Validate postal code format (basic validation)
-        if (!/^\d{5}$/.test(postal_code)) {
-            return res.status(400).json({
-                success: false,
-                message: "Invalid postal code format. Expected 5 digits.",
-            });
-        }
-
-        // Validate optional parameters
-        if (max_restaurants !== undefined && (!Number.isInteger(max_restaurants) || max_restaurants <= 0)) {
-            return res.status(400).json({
-                success: false,
-                message: "max_restaurants must be a positive integer",
-            });
-        }
-
-        if (max_menu_items !== undefined && (!Number.isInteger(max_menu_items) || max_menu_items <= 0)) {
-            return res.status(400).json({
-                success: false,
-                message: "max_menu_items must be a positive integer",
-            });
-        }
-
-        // Validate LLM configuration if provided
-        // Validate LLM configuration
-        if (!process.env.NEW_OPENAI_API_KEY) {
-            return res.status(500).json({
-                success: false,
-                message: "OpenAI API key not configured in environment variables",
-            });
-        }
+    
 
         console.log(`Starting postal code scraping for: ${postal_code}`);
         console.log(`User: ${req.user.firstName} ${req.user.lastName} (${req.user.email})`);
-        console.log(`Parameters:`, {
-            max_restaurants,
-            max_menu_items,
-            visible,
-            llm_enabled: !!llm_config
-        });
 
         // Generate unique job ID
         const jobId = uuidv4().split('-')[0]; // Short job ID
@@ -85,10 +43,10 @@ exports.startPostalCodeScraping = async (req, res) => {
             maxRestaurants: max_restaurants,
             maxMenuItems: max_menu_items,
             visible,
-           llmConfig: {
-                provider: llm_config.provider,
-                apiKey: llm_config.api_key,
-                model: llm_config.model
+            llmConfig: {
+                provider: 'openai',
+                apiKey: process.env.NEW_OPENAI_API_KEY,
+                model: 'gpt-4o-mini'
             },
             status: 'pending',
             createdBy: req.user._id,
@@ -104,23 +62,22 @@ exports.startPostalCodeScraping = async (req, res) => {
 
         await scrapingJob.save();
 
-        // Prepare request payload for scraper API
+        // Prepare request payload for Flask scraper API
         const scrapingPayload = {
             postal_code,
-            visible,
-            llm_config,
-            ...(max_restaurants && { max_restaurants }),
+            max_restaurants,
             ...(max_menu_items && { max_menu_items })
         };
-        console.log(`Sending request to scraper API:`, {
-            url: `${SCRAPER_API_URL}/scrape`,
-            payload: { ...scrapingPayload, llm_config: llm_config ? '[REDACTED]' : undefined }
+
+        console.log(`Sending request to Flask scraper API:`, {
+            url: `${SCRAPER_API_URL}/start_scraping`,
+            payload: scrapingPayload
         });
 
-        // Start the scraping job
+        // Start the scraping job via Flask API
         try {
             const response = await axios.post(
-                `${SCRAPER_API_URL}/scrape`,
+                `${SCRAPER_API_URL}/start_scraping`,
                 scrapingPayload,
                 {
                     timeout: SCRAPER_API_TIMEOUT,
@@ -130,38 +87,30 @@ exports.startPostalCodeScraping = async (req, res) => {
                 }
             );
 
-            if (response.data.success) {
-                // Update job with external job ID and mark as started
-                scrapingJob.jobId = response.data.job_id; // Use the external job ID
+            if (response.data.message && response.data.job_id) {
+                // Update job with Flask job ID and mark as started
+                scrapingJob.externalJobId = response.data.job_id;
                 await scrapingJob.markAsStarted();
 
                 console.log(`Scraping job started successfully:`, {
                     internalJobId: jobId,
-                    externalJobId: response.data.job_id,
-                    postal_code,
-                    features: response.data.features || []
+                    flaskJobId: response.data.job_id,
+                    postal_code
                 });
 
-                // Start background monitoring (don't await this)
-                monitorScrapingJob(scrapingJob._id, response.data.job_id)
+                // Start background monitoring and data fetching
+                monitorFlaskScrapingJob(scrapingJob._id, jobId)
                     .catch(error => {
                         console.error(`Error in background monitoring for job ${jobId}:`, error);
                     });
 
                 res.status(202).json({
                     success: true,
-                    job_id: jobId, // Return our internal job ID
-                    external_job_id: response.data.job_id,
+                    job_id: jobId,
+                    flask_job_id: response.data.job_id,
                     postal_code,
                     message: response.data.message,
                     status_url: `/api/postal-scraping/jobs/${jobId}`,
-                    estimated_time: response.data.estimated_time,
-                    features: response.data.features || [],
-                   llm_categorization: {
-                        enabled: true,
-                        provider: llm_config.provider,
-                        model: llm_config.model
-                    },
                     monitoring: {
                         job_status: `/api/postal-scraping/jobs/${jobId}`,
                         live_progress: `/api/postal-scraping/jobs/${jobId}/progress`
@@ -169,27 +118,22 @@ exports.startPostalCodeScraping = async (req, res) => {
                 });
 
             } else {
-                // Scraper API returned error
-                await scrapingJob.markAsFailed(new Error(response.data.error || response.data.message || 'Unknown scraper API error'));
-
+                await scrapingJob.markAsFailed(new Error(response.data.error || 'Unknown Flask API error'));
                 res.status(400).json({
                     success: false,
                     message: "Failed to start scraping",
-                    error: response.data.error || response.data.message || 'Unknown error from scraper API',
+                    error: response.data.error || 'Unknown error from Flask API',
                 });
             }
 
         } catch (apiError) {
-            console.error(`Scraper API error for job ${jobId}:`, apiError.message);
-
-            // Mark job as failed
+            console.error(`Flask API error for job ${jobId}:`, apiError.message);
             await scrapingJob.markAsFailed(apiError);
 
-            // Handle different types of API errors
             if (apiError.code === 'ECONNABORTED') {
                 return res.status(408).json({
                     success: false,
-                    message: "Scraper API request timeout",
+                    message: "Flask API request timeout",
                     error: "The scraping service is currently slow. Please try again later.",
                 });
             }
@@ -197,15 +141,15 @@ exports.startPostalCodeScraping = async (req, res) => {
             if (apiError.response) {
                 return res.status(apiError.response.status || 500).json({
                     success: false,
-                    message: "Error from scraping service",
+                    message: "Error from Flask scraping service",
                     error: apiError.response.data?.error || "External service error",
                 });
             }
 
             res.status(500).json({
                 success: false,
-                message: "Failed to connect to scraping service",
-                error: "Please check if the scraping service is running",
+                message: "Failed to connect to Flask scraping service",
+                error: "Please check if the Flask service is running",
             });
         }
 
@@ -214,141 +158,6 @@ exports.startPostalCodeScraping = async (req, res) => {
         res.status(500).json({
             success: false,
             message: "Internal server error",
-            error: error.message,
-        });
-    }
-};
-
-/**
- * Get job status and progress
- */
-exports.getJobStatus = async (req, res) => {
-    try {
-        const { jobId } = req.params;
-
-        const job = await PostalCodeScraping.findOne({ jobId }).populate('createdBy', 'firstName lastName email');
-
-        if (!job) {
-            return res.status(404).json({
-                success: false,
-                message: "Job not found",
-            });
-        }
-
-        // Check if user has permission to view this job
-        if (req.user.role !== 'admin' &&
-            req.user.role !== 'sales_manager' &&
-            job.createdBy._id.toString() !== req.user._id.toString()) {
-            return res.status(403).json({
-                success: false,
-                message: "Unauthorized to view this job",
-            });
-        }
-
-        // If job is still running, try to get latest status from scraper API
-        if (job.status === 'running' || job.status === 'pending') {
-            try {
-                await updateJobStatusFromAPI(job);
-            } catch (error) {
-                console.error(`Error updating job status from API:`, error.message);
-                // Continue with existing data
-            }
-        }
-
-        res.json({
-            success: true,
-            job: {
-                id: job._id,
-                jobId: job.jobId,
-                postalCode: job.postalCode,
-                status: job.status,
-                progress: job.progress,
-                results: job.results,
-                timing: job.results.timing,
-                runtimeMinutes: job.currentRuntimeMinutes,
-                createdAt: job.createdAt,
-                startedAt: job.startedAt,
-                completedAt: job.completedAt,
-                createdBy: job.createdBy,
-                featuresUsed: job.featuresUsed,
-                llmCategorization: {
-                    enabled: !!job.llmConfig.provider,
-                    provider: job.llmConfig.provider,
-                    model: job.llmConfig.model
-                }
-            }
-        });
-
-    } catch (error) {
-        console.error("Error getting job status:", error);
-        res.status(500).json({
-            success: false,
-            message: "Error retrieving job status",
-            error: error.message,
-        });
-    }
-};
-
-/**
- * Get detailed job progress with real-time data
- */
-exports.getJobProgress = async (req, res) => {
-    try {
-        const { jobId } = req.params;
-
-        const job = await PostalCodeScraping.findOne({ jobId });
-        if (!job) {
-            return res.status(404).json({
-                success: false,
-                message: "Job not found",
-            });
-        }
-
-        // Update from API if still running
-        if (job.status === 'running' || job.status === 'pending') {
-            try {
-                await updateJobStatusFromAPI(job);
-            } catch (error) {
-                console.error(`Error updating job progress:`, error.message);
-            }
-        }
-
-        res.json({
-            success: true,
-            progress: {
-                jobId: job.jobId,
-                status: job.status,
-                runtimeMinutes: job.currentRuntimeMinutes,
-                currentStep: job.progress.currentEstablishment || 'Initializing...',
-                establishments: {
-                    total: job.progress.establishmentsScraped,
-                    restaurants: job.progress.restaurantsFound,
-                    stores: job.progress.storesFound
-                },
-                items: {
-                    menuItems: job.progress.totalMenuItems,
-                    products: job.progress.totalProducts,
-                    total: job.progress.totalMenuItems + job.progress.totalProducts
-                },
-                efficiency: {
-                    pagesProcessed: job.progress.pagesProcessed,
-                    duplicatesPrevented: job.progress.duplicatesPrevented,
-                    storeDuplicatesPrevented: job.progress.storeDuplicatesPrevented
-                },
-                categorization: {
-                    llmUsed: job.progress.llmCategorizationUsed,
-                    provider: job.llmConfig.provider
-                },
-                estimatedTimeRemaining: job.estimatedTimeRemaining,
-                error: job.progress.error
-            }
-        });
-
-    } catch (error) {
-        console.error("Error getting job progress:", error);
-        res.status(500).json({
-            success: false,
-            message: "Error retrieving job progress",
             error: error.message,
         });
     }
@@ -386,17 +195,16 @@ exports.stopJob = async (req, res) => {
             });
         }
 
-        // Try to stop the job via scraper API
+        // Try to stop the job via Flask API
         try {
             await axios.post(
-                `${SCRAPER_API_URL}/stop/${job.jobId}`,
+                `${SCRAPER_API_URL}/stop_job`,
                 {},
                 { timeout: 10000 }
             );
-            console.log(`Successfully sent stop request to scraper API for job ${jobId}`);
+            console.log(`Successfully sent stop request to Flask API for job ${jobId}`);
         } catch (apiError) {
-            console.error(`Error stopping job via API:`, apiError.message);
-            // Continue with local update even if API call fails
+            console.error(`Error stopping job via Flask API:`, apiError.message);
         }
 
         // Update local job status
@@ -424,130 +232,13 @@ exports.stopJob = async (req, res) => {
 };
 
 /**
- * List all jobs with filtering and pagination
+ * Get job status and progress
  */
-exports.listJobs = async (req, res) => {
-    try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 20;
-        const skip = (page - 1) * limit;
-
-        const { status, postal_code, user_id, sort_by = 'createdAt', sort_order = 'desc' } = req.query;
-
-        // Build query
-        let query = {};
-
-        // Role-based filtering
-        if (req.user.role === 'sales_agent') {
-            query.createdBy = req.user._id;
-        } else if (req.user.role === 'sales_manager') {
-            // Sales managers can see jobs from their team (implement team logic if needed)
-            // For now, they can see all jobs
-        }
-        // Admins can see all jobs
-
-        // Apply filters
-        if (status) {
-            query.status = status;
-        }
-
-        if (postal_code) {
-            query.postalCode = postal_code;
-        }
-
-        if (user_id && req.user.role !== 'sales_agent') {
-            query.createdBy = user_id;
-        }
-
-        // Build sort object
-        const sortDirection = sort_order === 'desc' ? -1 : 1;
-        const sortObj = { [sort_by]: sortDirection };
-
-        // Execute query
-        const [jobs, totalCount] = await Promise.all([
-            PostalCodeScraping.find(query)
-                .populate('createdBy', 'firstName lastName email role')
-                .sort(sortObj)
-                .skip(skip)
-                .limit(limit),
-            PostalCodeScraping.countDocuments(query)
-        ]);
-
-        // Get summary statistics
-        const summaryStats = await PostalCodeScraping.aggregate([
-            { $match: query },
-            {
-                $group: {
-                    _id: '$status',
-                    count: { $sum: 1 },
-                    totalEstablishments: { $sum: '$progress.establishmentsScraped' },
-                    totalRestaurants: { $sum: '$progress.restaurantsFound' },
-                    totalStores: { $sum: '$progress.storesFound' }
-                }
-            }
-        ]);
-
-        const summary = {
-            total: totalCount,
-            byStatus: {},
-            totalEstablishments: 0,
-            totalRestaurants: 0,
-            totalStores: 0
-        };
-
-        summaryStats.forEach(stat => {
-            summary.byStatus[stat._id] = stat.count;
-            summary.totalEstablishments += stat.totalEstablishments;
-            summary.totalRestaurants += stat.totalRestaurants;
-            summary.totalStores += stat.totalStores;
-        });
-
-        res.json({
-            success: true,
-            jobs: jobs.map(job => ({
-                id: job._id,
-                jobId: job.jobId,
-                postalCode: job.postalCode,
-                status: job.status,
-                progress: {
-                    establishmentsScraped: job.progress.establishmentsScraped,
-                    restaurantsFound: job.progress.restaurantsFound,
-                    storesFound: job.progress.storesFound,
-                    totalItems: job.progress.totalMenuItems + job.progress.totalProducts
-                },
-                runtimeMinutes: job.currentRuntimeMinutes,
-                createdAt: job.createdAt,
-                createdBy: job.createdBy,
-                featuresUsed: job.featuresUsed,
-                llmEnabled: !!job.llmConfig.provider
-            })),
-            pagination: {
-                page,
-                limit,
-                total: totalCount,
-                pages: Math.ceil(totalCount / limit)
-            },
-            summary
-        });
-
-    } catch (error) {
-        console.error("Error listing jobs:", error);
-        res.status(500).json({
-            success: false,
-            message: "Error retrieving jobs",
-            error: error.message,
-        });
-    }
-};
-
-/**
- * Manually link scraped data to a job (useful for cleanup)
- */
-exports.linkScrapedDataToJob = async (req, res) => {
+exports.getJobStatus = async (req, res) => {
     try {
         const { jobId } = req.params;
 
-        const job = await PostalCodeScraping.findOne({ jobId });
+        const job = await PostalCodeScraping.findOne({ jobId }).populate('createdBy', 'firstName lastName email');
 
         if (!job) {
             return res.status(404).json({
@@ -558,47 +249,110 @@ exports.linkScrapedDataToJob = async (req, res) => {
 
         // Check permissions
         if (req.user.role !== 'admin' &&
-            job.createdBy.toString() !== req.user._id.toString()) {
+            req.user.role !== 'sales_manager' &&
+            job.createdBy._id.toString() !== req.user._id.toString()) {
             return res.status(403).json({
                 success: false,
-                message: "Unauthorized to link data for this job",
+                message: "Unauthorized to view this job",
             });
         }
 
-        const jobStartTime = job.startedAt || job.createdAt;
-        const jobEndTime = job.completedAt || new Date();
-        const searchStartTime = new Date(jobStartTime.getTime() - 5 * 60 * 1000);
-
-        console.log(UberEatsData.find({ postal_code: job.postalCode }))
-        // Link unlinked data from this postal code and time period
-        const result = await UberEatsData.updateMany(
-            {
-                postal_code: job.postalCode,
-
-            },
-            { $set: { scraping_job_id: job.jobId } }
-        );
-
-        console.log(result)
+        // If job is still running, try to get latest status from Flask and sync data
+        if (job.status === 'running' || job.status === 'pending') {
+            try {
+                await updateJobStatusFromFlask(job);
+                await syncDataFromFlask(job);
+            } catch (error) {
+                console.error(`Error updating job status from Flask:`, error.message);
+            }
+        }
 
         res.json({
             success: true,
-            message: `Linked ${result.modifiedCount} establishments to job ${job.jobId}`,
-            linkedCount: result.modifiedCount
+            job: {
+                id: job._id,
+                jobId: job.jobId,
+                postalCode: job.postalCode,
+                status: job.status,
+                progress: job.progress,
+                results: job.results,
+                runtimeMinutes: job.currentRuntimeMinutes,
+                createdAt: job.createdAt,
+                startedAt: job.startedAt,
+                completedAt: job.completedAt,
+                createdBy: job.createdBy,
+                featuresUsed: job.featuresUsed
+            }
         });
 
     } catch (error) {
-        console.error("Error linking scraped data to job:", error);
+        console.error("Error getting job status:", error);
         res.status(500).json({
             success: false,
-            message: "Error linking scraped data",
+            message: "Error retrieving job status",
             error: error.message,
         });
     }
 };
 
 /**
- * Get job results and files
+ * Get detailed job progress with real-time data
+ */
+exports.getJobProgress = async (req, res) => {
+    try {
+        const { jobId } = req.params;
+
+        const job = await PostalCodeScraping.findOne({ jobId });
+        if (!job) {
+            return res.status(404).json({
+                success: false,
+                message: "Job not found",
+            });
+        }
+
+        // Update from Flask if still running
+        if (job.status === 'running' || job.status === 'pending') {
+            try {
+                await updateJobStatusFromFlask(job);
+                await syncDataFromFlask(job);
+            } catch (error) {
+                console.error(`Error updating job progress:`, error.message);
+            }
+        }
+
+        res.json({
+            success: true,
+            progress: {
+                jobId: job.jobId,
+                status: job.status,
+                runtimeMinutes: job.currentRuntimeMinutes,
+                currentStep: job.progress.currentEstablishment || 'Initializing...',
+                establishments: {
+                    total: job.progress.establishmentsScraped,
+                    restaurants: job.progress.restaurantsFound,
+                    stores: job.progress.storesFound
+                },
+                items: {
+                    menuItems: job.progress.totalMenuItems,
+                    products: job.progress.totalProducts,
+                    total: job.progress.totalMenuItems + job.progress.totalProducts
+                },
+                error: job.progress.error
+            }
+        });
+
+    } catch (error) {
+        console.error("Error getting job progress:", error);
+        res.status(500).json({
+            success: false,
+            message: "Error retrieving job progress",
+            error: error.message,
+        });
+    }
+};
+
+/**
+ * Get job results and download completed data
  */
 exports.getJobResults = async (req, res) => {
     try {
@@ -620,6 +374,10 @@ exports.getJobResults = async (req, res) => {
             });
         }
 
+        // Get scraped data from our database
+        const scrapedData = await UberEatsData.find({ scraping_job_id: jobId })
+            .sort({ scraped_at: -1 });
+
         res.json({
             success: true,
             results: {
@@ -627,25 +385,14 @@ exports.getJobResults = async (req, res) => {
                 postalCode: job.postalCode,
                 status: job.status,
                 summary: {
-                    totalEstablishments: job.results.categorizationStats.totals.establishments,
-                    restaurants: job.results.categorizationStats.restaurants.count,
-                    stores: job.results.categorizationStats.stores.count,
-                    totalItems: job.results.categorizationStats.totals.totalItems,
-                    pagesProcessed: job.results.scrapingResults.pagesProcessed
+                    totalEstablishments: job.progress.establishmentsScraped,
+                    restaurants: job.progress.restaurantsFound,
+                    stores: job.progress.storesFound,
+                    totalItems: job.progress.totalMenuItems + job.progress.totalProducts
                 },
-                categorization: {
-                    llmUsed: job.results.scrapingResults.llmCategorizationUsed,
-                    categoryDistribution: Object.fromEntries(job.results.categorizationStats.categoryDistribution),
-                    topCategories: job.results.categorizationStats.topCategories
-                },
-                performance: {
-                    totalTimeSeconds: job.results.timing.totalTime,
-                    scrapingTimeSeconds: job.results.timing.scrapingTime,
-                    runtimeMinutes: job.currentRuntimeMinutes
-                },
-                outputFiles: job.results.outputFiles,
-                createdBy: job.createdBy,
-                completedAt: job.completedAt
+                scrapedData: scrapedData,
+                completedAt: job.completedAt,
+                createdBy: job.createdBy
             }
         });
 
@@ -660,58 +407,121 @@ exports.getJobResults = async (req, res) => {
 };
 
 /**
- * Get scraped data for a specific job (based on postal code and timing)
+ * Load existing JSON data from Flask (for testing or manual data loading)
  */
+exports.loadJsonDataFromFlask = async (req, res) => {
+    try {
+        const { postal_code } = req.body;
+
+        if (!postal_code) {
+            return res.status(400).json({
+                success: false,
+                message: "Postal code is required",
+            });
+        }
+
+        // Call Flask API to load JSON data
+        const response = await axios.post(
+            `${SCRAPER_API_URL}/load_json_data`,
+            { postal_code },
+            { timeout: 30000 }
+        );
+
+        if (response.data.message) {
+            res.json({
+                success: true,
+                message: response.data.message,
+                restaurant_count: response.data.restaurant_count,
+                file: response.data.file
+            });
+        } else {
+            res.status(400).json({
+                success: false,
+                message: response.data.error || "Failed to load JSON data"
+            });
+        }
+
+    } catch (error) {
+        console.error("Error loading JSON data from Flask:", error);
+        res.status(500).json({
+            success: false,
+            message: "Error loading JSON data",
+            error: error.message,
+        });
+    }
+};
+
+// Include other existing methods...
+exports.listJobs = async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
+
+        const { status, postal_code, user_id, sort_by = 'createdAt', sort_order = 'desc' } = req.query;
+
+        let query = {};
+
+        // Role-based filtering
+        if (req.user.role === 'sales_agent') {
+            query.createdBy = req.user._id;
+        }
+
+        if (status) query.status = status;
+        if (postal_code) query.postalCode = postal_code;
+        if (user_id && req.user.role !== 'sales_agent') query.createdBy = user_id;
+
+        const sortDirection = sort_order === 'desc' ? -1 : 1;
+        const sortObj = { [sort_by]: sortDirection };
+
+        const [jobs, totalCount] = await Promise.all([
+            PostalCodeScraping.find(query)
+                .populate('createdBy', 'firstName lastName email role')
+                .sort(sortObj)
+                .skip(skip)
+                .limit(limit),
+            PostalCodeScraping.countDocuments(query)
+        ]);
+
+        res.json({
+            success: true,
+            jobs: jobs.map(job => ({
+                id: job._id,
+                jobId: job.jobId,
+                postalCode: job.postalCode,
+                status: job.status,
+                progress: job.progress,
+                runtimeMinutes: job.currentRuntimeMinutes,
+                createdAt: job.createdAt,
+                createdBy: job.createdBy
+            })),
+            pagination: {
+                page,
+                limit,
+                total: totalCount,
+                pages: Math.ceil(totalCount / limit)
+            }
+        });
+
+    } catch (error) {
+        console.error("Error listing jobs:", error);
+        res.status(500).json({
+            success: false,
+            message: "Error retrieving jobs",
+            error: error.message,
+        });
+    }
+};
+
 exports.getJobScrapedData = async (req, res) => {
     try {
         const { jobId } = req.params;
-        const {
-            page = 1,
-            limit = 20,
-            establishment_type,
-            search,
-            sort_by = 'scraped_at',
-            sort_order = 'desc'
-        } = req.query;
+        const { page = 1, limit = 20, establishment_type, search } = req.query;
 
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
-        // Find the job first to verify access
-        const job = await PostalCodeScraping.findOne({ jobId });
-
-        if (!job) {
-            return res.status(404).json({
-                success: false,
-                message: "Job not found",
-            });
-        }
-
-        // Check permissions
-        if (req.user.role !== 'admin' &&
-            req.user.role !== 'sales_manager' &&
-            job.createdBy.toString() !== req.user._id.toString()) {
-            return res.status(403).json({
-                success: false,
-                message: "Unauthorized to view this job data",
-            });
-        }
-
-        // Calculate time window for the job (job start time + buffer)
-        const jobStartTime = job.startedAt || job.createdAt;
-        const jobEndTime = job.completedAt || new Date();
-
-        // Add 5 minute buffer before job start to catch any data
-        const searchStartTime = new Date(jobStartTime.getTime() - 5 * 60 * 1000);
-
-        // Build query for scraped data based on postal code and time window
-        let query = {
-            postal_code: job.postalCode,
-            scraped_at: {
-                $gte: searchStartTime,
-                $lte: jobEndTime
-            }
-        };
-
+        let query = { scraping_job_id: jobId };
+        
         if (establishment_type) {
             query.establishment_type = establishment_type;
         }
@@ -724,54 +534,14 @@ exports.getJobScrapedData = async (req, res) => {
             ];
         }
 
-        // Build sort object
-        const sortDirection = sort_order === 'desc' ? -1 : 1;
-        const sortObj = { [sort_by]: sortDirection };
-
-        // Execute queries
-        const [scrapedData, totalCount, stats] = await Promise.all([
+        const [scrapedData, totalCount] = await Promise.all([
             UberEatsData.find(query)
-                .sort(sortObj)
+                .sort({ scraped_at: -1 })
                 .skip(skip)
                 .limit(parseInt(limit))
                 .lean(),
-            UberEatsData.countDocuments(query),
-            UberEatsData.getStatsByPostalCodeAndTime(job.postalCode, searchStartTime, jobEndTime)
+            UberEatsData.countDocuments(query)
         ]);
-
-        // Update scraped data with job ID for future reference
-        if (scrapedData.length > 0) {
-            await UberEatsData.updateMany(
-                {
-                    postal_code: job.postalCode,
-                    scraped_at: { $gte: searchStartTime, $lte: jobEndTime },
-                    scraping_job_id: null
-                },
-                { $set: { scraping_job_id: job.jobId } }
-            );
-        }
-
-        // Get category distribution
-        const categoryDistribution = await UberEatsData.aggregate([
-            { $match: query },
-            { $unwind: '$categories' },
-            {
-                $group: {
-                    _id: '$categories',
-                    count: { $sum: 1 }
-                }
-            },
-            { $sort: { count: -1 } },
-            { $limit: 10 }
-        ]);
-
-        const statistics = stats[0] || {
-            totalEstablishments: 0,
-            restaurants: 0,
-            stores: 0,
-            totalMenuItems: 0,
-            avgMenuItemsPerEstablishment: 0
-        };
 
         res.json({
             success: true,
@@ -781,26 +551,6 @@ exports.getJobScrapedData = async (req, res) => {
                 limit: parseInt(limit),
                 total: totalCount,
                 pages: Math.ceil(totalCount / parseInt(limit))
-            },
-            statistics: {
-                ...statistics,
-                categoryDistribution: categoryDistribution.map(cat => ({
-                    category: cat._id,
-                    count: cat.count
-                }))
-            },
-            job: {
-                id: job._id,
-                jobId: job.jobId,
-                postalCode: job.postalCode,
-                status: job.status,
-                startedAt: job.startedAt,
-                completedAt: job.completedAt
-            },
-            timeWindow: {
-                searchStartTime,
-                jobEndTime,
-                description: `Data scraped between ${searchStartTime.toISOString()} and ${jobEndTime.toISOString()}`
             }
         });
 
@@ -814,9 +564,6 @@ exports.getJobScrapedData = async (req, res) => {
     }
 };
 
-/**
- * Get real-time scraped data count for a running job
- */
 exports.getJobDataProgress = async (req, res) => {
     try {
         const { jobId } = req.params;
@@ -830,50 +577,37 @@ exports.getJobDataProgress = async (req, res) => {
             });
         }
 
-        // Calculate time window for the job
-        const jobStartTime = job.startedAt || job.createdAt;
-        const currentTime = new Date();
+        // Get real-time stats from our database
+        const currentStats = await UberEatsData.aggregate([
+            { $match: { scraping_job_id: jobId } },
+            {
+                $group: {
+                    _id: null,
+                    totalEstablishments: { $sum: 1 },
+                    restaurants: {
+                        $sum: { $cond: [{ $eq: ['$establishment_type', 'restaurant'] }, 1, 0] }
+                    },
+                    stores: {
+                        $sum: { $cond: [{ $ne: ['$establishment_type', 'restaurant'] }, 1, 0] }
+                    },
+                    totalMenuItems: { $sum: '$menu_items_count' }
+                }
+            }
+        ]);
 
-        // Add 5 minute buffer before job start
-        const searchStartTime = new Date(jobStartTime.getTime() - 5 * 60 * 1000);
-
-        // Get real-time stats from database based on postal code and timing
-        const stats = await UberEatsData.getStatsByPostalCodeAndTime(
-            job.postalCode,
-            searchStartTime,
-            currentTime
-        );
-
-        const currentStats = stats[0] || {
+        const stats = currentStats[0] || {
             totalEstablishments: 0,
             restaurants: 0,
             stores: 0,
-            totalMenuItems: 0,
-            avgMenuItemsPerEstablishment: 0
+            totalMenuItems: 0
         };
 
-        // Get latest scraped establishments for this postal code in the time window
-        const latestData = await UberEatsData.find({
-            postal_code: job.postalCode,
-            scraped_at: { $gte: searchStartTime, $lte: currentTime }
-        })
+        // Get latest scraped establishments
+        const latestData = await UberEatsData.find({ scraping_job_id: jobId })
             .sort({ scraped_at: -1 })
             .limit(5)
             .select('name establishment_type menu_items_count scraped_at')
             .lean();
-
-        // Update job progress with real database stats
-        if (job.status === 'running') {
-            const progressUpdate = {
-                establishmentsScraped: currentStats.totalEstablishments,
-                restaurantsFound: currentStats.restaurants,
-                storesFound: currentStats.stores,
-                totalMenuItems: currentStats.totalMenuItems,
-                totalProducts: 0 // This would need to be calculated separately for non-restaurant items
-            };
-
-            await job.updateProgress(progressUpdate);
-        }
 
         res.json({
             success: true,
@@ -881,12 +615,8 @@ exports.getJobDataProgress = async (req, res) => {
                 jobId: job.jobId,
                 status: job.status,
                 postalCode: job.postalCode,
-                realTimeStats: currentStats,
+                realTimeStats: stats,
                 latestEstablishments: latestData,
-                timeWindow: {
-                    start: searchStartTime,
-                    current: currentTime
-                },
                 lastUpdated: new Date().toISOString()
             }
         });
@@ -901,16 +631,11 @@ exports.getJobDataProgress = async (req, res) => {
     }
 };
 
-/**
- * Delete a job and its associated data
- */
 exports.deleteJob = async (req, res) => {
     try {
         const { jobId } = req.params;
 
-        const job = await PostalCodeScraping.findOne({
-            $or: [{ jobId }, { jobId: jobId }]
-        });
+        const job = await PostalCodeScraping.findOne({ jobId });
 
         if (!job) {
             return res.status(404).json({
@@ -919,7 +644,6 @@ exports.deleteJob = async (req, res) => {
             });
         }
 
-        // Check permissions
         if (req.user.role !== 'admin' &&
             job.createdBy.toString() !== req.user._id.toString()) {
             return res.status(403).json({
@@ -928,7 +652,6 @@ exports.deleteJob = async (req, res) => {
             });
         }
 
-        // Don't allow deletion of running jobs
         if (job.status === 'running') {
             return res.status(400).json({
                 success: false,
@@ -953,14 +676,10 @@ exports.deleteJob = async (req, res) => {
     }
 };
 
-/**
- * Get statistics for postal code scraping
- */
 exports.getScrapingStatistics = async (req, res) => {
     try {
-        const { timeframe = '30d', user_id } = req.query;
+        const { timeframe = '30d' } = req.query;
 
-        // Calculate date range
         let dateFilter = {};
         const now = new Date();
 
@@ -974,82 +693,23 @@ exports.getScrapingStatistics = async (req, res) => {
             case '30d':
                 dateFilter.createdAt = { $gte: new Date(now - 30 * 24 * 60 * 60 * 1000) };
                 break;
-            case 'all':
-                break;
-            default:
-                dateFilter.createdAt = { $gte: new Date(now - 30 * 24 * 60 * 60 * 1000) };
         }
 
-        // Build query
         let query = { ...dateFilter };
-
-        // Role-based filtering
         if (req.user.role === 'sales_agent') {
             query.createdBy = req.user._id;
-        } else if (user_id && req.user.role !== 'sales_agent') {
-            query.createdBy = user_id;
         }
 
-        // Aggregate statistics
         const stats = await PostalCodeScraping.aggregate([
             { $match: query },
             {
                 $group: {
                     _id: null,
                     totalJobs: { $sum: 1 },
-                    completedJobs: {
-                        $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
-                    },
-                    failedJobs: {
-                        $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] }
-                    },
-                    runningJobs: {
-                        $sum: { $cond: [{ $eq: ['$status', 'running'] }, 1, 0] }
-                    },
+                    completedJobs: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
+                    failedJobs: { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
                     totalEstablishments: { $sum: '$progress.establishmentsScraped' },
-                    totalRestaurants: { $sum: '$progress.restaurantsFound' },
-                    totalStores: { $sum: '$progress.storesFound' },
-                    totalMenuItems: { $sum: '$progress.totalMenuItems' },
-                    totalProducts: { $sum: '$progress.totalProducts' },
-                    avgRuntimeMinutes: { $avg: '$runtimeSeconds' },
-                    llmJobsCount: {
-                        $sum: { $cond: [{ $ne: ['$llmConfig.provider', null] }, 1, 0] }
-                    }
-                }
-            }
-        ]);
-
-        // Get postal code distribution
-        const postalCodeStats = await PostalCodeScraping.aggregate([
-            { $match: query },
-            {
-                $group: {
-                    _id: '$postalCode',
-                    jobCount: { $sum: 1 },
-                    totalEstablishments: { $sum: '$progress.establishmentsScraped' },
-                    lastJobDate: { $max: '$createdAt' }
-                }
-            },
-            { $sort: { jobCount: -1 } },
-            { $limit: 10 }
-        ]);
-
-        // Get performance metrics by status
-        const performanceStats = await PostalCodeScraping.aggregate([
-            { $match: { ...query, status: 'completed' } },
-            {
-                $group: {
-                    _id: '$status',
-                    avgEstablishments: { $avg: '$progress.establishmentsScraped' },
-                    avgRuntimeMinutes: { $avg: { $divide: ['$runtimeSeconds', 60] } },
-                    avgItemsPerEstablishment: {
-                        $avg: {
-                            $divide: [
-                                { $add: ['$progress.totalMenuItems', '$progress.totalProducts'] },
-                                { $max: ['$progress.establishmentsScraped', 1] }
-                            ]
-                        }
-                    }
+                    totalMenuItems: { $sum: '$progress.totalMenuItems' }
                 }
             }
         ]);
@@ -1058,54 +718,35 @@ exports.getScrapingStatistics = async (req, res) => {
             totalJobs: 0,
             completedJobs: 0,
             failedJobs: 0,
-            runningJobs: 0,
             totalEstablishments: 0,
-            totalRestaurants: 0,
-            totalStores: 0,
-            totalMenuItems: 0,
-            totalProducts: 0,
-            avgRuntimeMinutes: 0,
-            llmJobsCount: 0
+            totalMenuItems: 0
         };
 
         res.json({
             success: true,
-            timeframe,
             statistics: {
                 jobs: {
                     total: result.totalJobs,
                     completed: result.completedJobs,
                     failed: result.failedJobs,
-                    running: result.runningJobs,
-                    successRate: result.totalJobs > 0 ?
+                    successRate: result.totalJobs > 0 ? 
                         Math.round((result.completedJobs / result.totalJobs) * 100) : 0
                 },
                 establishments: {
                     total: result.totalEstablishments,
-                    restaurants: result.totalRestaurants,
-                    stores: result.totalStores,
-                    avgPerJob: result.totalJobs > 0 ?
+                    avgPerJob: result.totalJobs > 0 ? 
                         Math.round(result.totalEstablishments / result.totalJobs) : 0
                 },
                 items: {
-                    menuItems: result.totalMenuItems,
-                    products: result.totalProducts,
-                    total: result.totalMenuItems + result.totalProducts,
-                    avgPerEstablishment: result.totalEstablishments > 0 ?
-                        Math.round((result.totalMenuItems + result.totalProducts) / result.totalEstablishments) : 0
-                },
-                performance: {
-                    avgRuntimeMinutes: Math.round((result.avgRuntimeMinutes || 0) / 60),
-                    llmUsageRate: result.totalJobs > 0 ?
-                        Math.round((result.llmJobsCount / result.totalJobs) * 100) : 0
-                },
-                topPostalCodes: postalCodeStats,
-                performanceMetrics: performanceStats[0] || {}
+                    total: result.totalMenuItems,
+                    avgPerEstablishment: result.totalEstablishments > 0 ? 
+                        Math.round(result.totalMenuItems / result.totalEstablishments) : 0
+                }
             }
         });
 
     } catch (error) {
-        console.error("Error getting scraping statistics:", error);
+        console.error("Error getting statistics:", error);
         res.status(500).json({
             success: false,
             message: "Error retrieving statistics",
@@ -1114,12 +755,9 @@ exports.getScrapingStatistics = async (req, res) => {
     }
 };
 
-/**
- * Get health status of the scraper API
- */
 exports.getScraperHealthStatus = async (req, res) => {
     try {
-        const response = await axios.get(`${SCRAPER_API_URL}/health`, {
+        const response = await axios.get(`${SCRAPER_API_URL}/`, {
             timeout: 10000
         });
 
@@ -1128,13 +766,12 @@ exports.getScraperHealthStatus = async (req, res) => {
             scraperApi: {
                 status: 'healthy',
                 url: SCRAPER_API_URL,
-                response: response.data,
                 responseTime: response.headers['x-response-time'] || 'N/A'
             }
         });
 
     } catch (error) {
-        console.error("Scraper API health check failed:", error.message);
+        console.error("Flask API health check failed:", error.message);
 
         res.json({
             success: true,
@@ -1152,12 +789,12 @@ exports.getScraperHealthStatus = async (req, res) => {
 // ================
 
 /**
- * Background function to monitor a scraping job
+ * Background function to monitor Flask scraping job and sync data
  */
-async function monitorScrapingJob(jobDbId, externalJobId) {
-    console.log(`Starting background monitoring for job ${externalJobId}`);
+async function monitorFlaskScrapingJob(jobDbId, jobId) {
+    console.log(`Starting background monitoring for Flask job ${jobId}`);
 
-    const maxMonitoringTime = 4 * 60 * 60 * 1000; // 4 hours
+    const maxMonitoringTime = 2 * 60 * 60 * 1000; // 2 hours
     const pollInterval = 30 * 1000; // 30 seconds
     const startTime = Date.now();
 
@@ -1165,92 +802,209 @@ async function monitorScrapingJob(jobDbId, externalJobId) {
         try {
             const job = await PostalCodeScraping.findById(jobDbId);
             if (!job) {
-                console.log(`Job ${externalJobId} not found in database, stopping monitoring`);
+                console.log(`Job ${jobId} not found in database, stopping monitoring`);
                 break;
             }
 
             if (job.status === 'completed' || job.status === 'failed' || job.status === 'stopped') {
-                console.log(`Job ${externalJobId} is ${job.status}, stopping monitoring`);
+                console.log(`Job ${jobId} is ${job.status}, stopping monitoring`);
                 break;
             }
 
-            // Update job status from API
-            await updateJobStatusFromAPI(job);
+            // Check Flask job status and sync data
+            await updateJobStatusFromFlask(job);
+            await syncDataFromFlask(job);
 
-            // Wait before next poll
             await new Promise(resolve => setTimeout(resolve, pollInterval));
 
         } catch (error) {
-            console.error(`Error in monitoring loop for job ${externalJobId}:`, error.message);
-
-            // Wait a bit longer on error
+            console.error(`Error in monitoring loop for job ${jobId}:`, error.message);
             await new Promise(resolve => setTimeout(resolve, pollInterval * 2));
         }
     }
 
-    console.log(`Monitoring completed for job ${externalJobId}`);
+    console.log(`Monitoring completed for Flask job ${jobId}`);
 }
 
 /**
-* Update job status from scraper API
-*/
-async function updateJobStatusFromAPI(job) {
+ * Update job status from Flask API
+ */
+async function updateJobStatusFromFlask(job) {
     try {
         const response = await axios.get(
-            `${SCRAPER_API_URL}/job/${job.jobId}`,
+            `${SCRAPER_API_URL}/job_status`,
             { timeout: 15000 }
         );
 
-        if (response.data && (response.data.status === 'completed' || response.data.status === 'running' || response.data.status === 'failed')) {
-            const apiData = response.data;
+        if (response.data && response.data.is_running !== undefined) {
+            const flaskData = response.data;
 
             // Update progress
             const progressUpdate = {
-                establishmentsScraped: apiData.total_establishments_saved || 0,
-                restaurantsFound: apiData.current_restaurants_saved || 0,
-                storesFound: apiData.current_stores_saved || 0,
-                totalMenuItems: apiData.current_menu_items_saved || 0,
-                totalProducts: apiData.current_products_saved || 0,
-                pagesProcessed: apiData.progress?.establishments_scraped || 0,
-                duplicatesPrevented: apiData.deduplication_effectiveness?.duplicates_prevented || 0,
-                storeDuplicatesPrevented: apiData.deduplication_effectiveness?.store_duplicates_prevented || 0,
-                llmCategorizationUsed: apiData.progress?.llm_categorization_used || false
+                establishmentsScraped: flaskData.completed_count || 0,
+                restaurantsFound: flaskData.completed_count || 0, // Flask doesn't distinguish yet
+                totalMenuItems: 0, // Will be updated when we sync data
+                currentEstablishment: flaskData.current_restaurant || ''
             };
 
             await job.updateProgress(progressUpdate);
 
-            // Check if job is completed
-            // Check if job is completed
-            if (apiData.status === 'completed' && apiData.result) {
-                const results = {
-                    success: true,
-                    scrapingResults: apiData.result.scraping_results,
-                    categorizationStats: apiData.result.categorization_stats || {},
-                    timing: apiData.result.timing || {},
-                    outputFiles: apiData.result.output_files || {},
-                    message: apiData.result.message
-                };
-                await job.setResults(results);
-                console.log(`Job ${job.jobId} completed successfully`);
-            } else if (apiData.status === 'failed') {
-                await job.markAsFailed(new Error(apiData.progress?.error || 'Unknown error'));
-                console.log(`Job ${job.jobId} failed`);
+            // Check if job completed
+            if (!flaskData.is_running && flaskData.results && flaskData.results.length > 0) {
+                console.log(`Flask job ${job.jobId} completed with ${flaskData.results.length} results`);
+                // Data will be synced separately
+            } else if (!flaskData.is_running && flaskData.error) {
+                await job.markAsFailed(new Error(flaskData.error));
             }
-
-        } else {
-            console.error(`API returned error for job ${job.jobId}:`, response.data);
         }
 
     } catch (error) {
-        console.error(`Error updating job ${job.jobId} from API:`, error.message);
-
-        // Don't mark as failed unless it's a persistent error
-        if (error.response?.status === 404) {
-            // Job not found in API, might have been cleaned up
-            console.log(`Job ${job.jobId} not found in scraper API`);
-        }
-
+        console.error(`Error updating job ${job.jobId} from Flask:`, error.message);
         throw error;
     }
 }
 
+/**
+ * Sync scraped data from Flask to our database
+ */
+async function syncDataFromFlask(job) {
+    try {
+        // Get partial results from Flask
+        const response = await axios.get(
+            `${SCRAPER_API_URL}/partial_results`,
+            { timeout: 15000 }
+        );
+
+        if (response.data && response.data.results && Array.isArray(response.data.results)) {
+            const results = response.data.results;
+            
+            console.log(`Syncing ${results.length} results for job ${job.jobId}`);
+
+            let savedCount = 0;
+            
+            for (const result of results) {
+                try {
+                    // Check if this result already exists
+                    const existingData = await UberEatsData.findOne({
+                        scraping_job_id: job.jobId,
+                        name: result.name,
+                        url: result.url
+                    });
+
+                    if (existingData) {
+                        continue; // Skip if already exists
+                    }
+
+                    // Create UberEatsData document
+                    const uberEatsData = new UberEatsData({
+                        url: result.url || '',
+                        postal_code: job.postalCode,
+                        name: result.name || 'Unknown',
+                        header: result.header || '',
+                        establishment_type: determineEstablishmentType(result),
+                        location: result.location || 'N/A',
+                        email: result.email || 'N/A',
+                        phone: result.phone || 'N/A',
+                        registration_number: result.registration_number || 'N/A',
+                        menu_items: result.menu_items || [],
+                        menu_items_count: result.menu_items_count || (result.menu_items ? result.menu_items.length : 0),
+                        categories: result.categories || [],
+                        scraping_job_id: job.jobId,
+                        created_by: job.createdBy,
+                        source: 'ubereats',
+                        scraped_at: new Date(),
+                        scraped_timestamp: Math.floor(Date.now() / 1000)
+                    });
+
+                    await uberEatsData.save();
+                    savedCount++;
+
+                } catch (saveError) {
+                    console.error(`Error saving result for ${result.name}:`, saveError.message);
+                }
+            }
+
+            if (savedCount > 0) {
+                console.log(`Successfully saved ${savedCount} new results for job ${job.jobId}`);
+                
+                // Update job progress with actual data from our database
+                const totalDataCount = await UberEatsData.countDocuments({ scraping_job_id: job.jobId });
+                const restaurantCount = await UberEatsData.countDocuments({ 
+                    scraping_job_id: job.jobId, 
+                    establishment_type: 'restaurant' 
+                });
+                const storeCount = totalDataCount - restaurantCount;
+                const totalMenuItems = await UberEatsData.aggregate([
+                    { $match: { scraping_job_id: job.jobId } },
+                    { $group: { _id: null, total: { $sum: '$menu_items_count' } } }
+                ]);
+
+                const progressUpdate = {
+                    establishmentsScraped: totalDataCount,
+                    restaurantsFound: restaurantCount,
+                    storesFound: storeCount,
+                    totalMenuItems: totalMenuItems.length > 0 ? totalMenuItems[0].total : 0,
+                    totalProducts: 0
+                };
+
+                await job.updateProgress(progressUpdate);
+            }
+
+            // Check if job is completed
+            if (!response.data.is_running) {
+                if (response.data.results.length > 0) {
+                    // Mark job as completed
+                    const results = {
+                        success: true,
+                        message: 'Scraping completed successfully',
+                        scrapingResults: {
+                            establishmentsScraped: job.progress.establishmentsScraped,
+                            restaurantsScraped: job.progress.restaurantsFound,
+                            storesScraped: job.progress.storesFound
+                        }
+                    };
+                    
+                    await job.setResults(results);
+                    console.log(`Job ${job.jobId} marked as completed`);
+                } else if (response.data.error) {
+                    await job.markAsFailed(new Error(response.data.error));
+                }
+            }
+        }
+
+    } catch (error) {
+        console.error(`Error syncing data for job ${job.jobId}:`, error.message);
+        // Don't throw error to avoid stopping monitoring
+    }
+}
+
+/**
+ * Determine establishment type from scraped data
+ */
+function determineEstablishmentType(result) {
+    // Check categories first
+    if (result.categories && Array.isArray(result.categories)) {
+        const categories = result.categories.map(c => c.toLowerCase());
+        
+        // Store/grocery indicators
+        const storeKeywords = ['grocery', 'convenience', 'pharmacy', 'retail', 'store', 'market', 'shop'];
+        if (storeKeywords.some(keyword => categories.some(cat => cat.includes(keyword)))) {
+            if (categories.some(cat => cat.includes('grocery'))) return 'grocery';
+            if (categories.some(cat => cat.includes('pharmacy'))) return 'pharmacy';
+            if (categories.some(cat => cat.includes('convenience'))) return 'convenience';
+            return 'store';
+        }
+    }
+    
+    // Check establishment name for store indicators
+    const name = (result.name || '').toLowerCase();
+    const header = (result.header || '').toLowerCase();
+    
+    const storeNames = ['cvs', 'walgreens', '7-eleven', 'wawa', 'target', 'walmart', 'costco'];
+    if (storeNames.some(store => name.includes(store) || header.includes(store))) {
+        return 'store';
+    }
+    
+    // Default to restaurant
+    return 'restaurant';
+}
