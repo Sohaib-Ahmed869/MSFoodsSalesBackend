@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require("uuid");
 const UberEatsData = require('../models/UberEats.model');
 
 // Configuration
-const SCRAPER_API_URL = process.env.SCRAPER_API_URL || "https://hfs-ws-1.onrender.com";
+const SCRAPER_API_URL = process.env.SCRAPER_API_URL || "https://msf-datascraper.foodservices.live";
 const SCRAPER_API_TIMEOUT = 300000; // 5 minutes
 
 /**
